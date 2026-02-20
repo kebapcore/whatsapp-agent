@@ -537,8 +537,9 @@ class TermuxAgent {
                 
                 if (retries > 0) {
                     logger.warning(`WhatsApp startup failed, retrying... (${retries} left)`, 'MAIN');
+                    logger.info('Aggressive cleanup + wait 4 seconds...', 'MAIN');
                     await this.killLingeringChrome();
-                    await new Promise(r => setTimeout(r, 3000)); // Wait 3s before retry
+                    await new Promise(r => setTimeout(r, 4000)); // Longer wait
                 }
             }
         }
@@ -642,45 +643,78 @@ class TermuxAgent {
     }
 
     async killLingeringChrome() {
-        const { execSync } = require('child_process');
+        const { execSync, spawnSync } = require('child_process');
         
         try {
-            // Kill Chrome/Chromium processes
+            logger.debug('Starting aggressive browser cleanup', 'CLEANUP');
+            
+            // Multiple kill methods
             try {
-                execSync('pkill -f "chromium|google-chrome" || true', { stdio: 'ignore' });
-                logger.debug('Killed lingering Chrome processes', 'CLEANUP');
+                execSync('pkill -9 -f "chromium|google-chrome|chrome" || true', { stdio: 'ignore' });
+                logger.debug('pkill executed', 'CLEANUP');
             } catch (e) {
                 // Ignore
             }
 
-            // Clean up session lock files
+            try {
+                execSync('killall -9 chrome chromium 2>/dev/null || true', { stdio: 'ignore' });
+                logger.debug('killall executed', 'CLEANUP');
+            } catch (e) {
+                // Ignore
+            }
+
+            try {
+                spawnSync('bash', ['-c', 'ps aux | grep -i "chromium\\|google-chrome" | grep -v grep | awk \'{print $2}\' | xargs kill -9 2>/dev/null || true'], { stdio: 'ignore' });
+                logger.debug('ps+grep executed', 'CLEANUP');
+            } catch (e) {
+                // Ignore
+            }
+
+            // Clean up session directory
             if (fs.existsSync(SESSION_DIR)) {
-                const lockFile = path.join(SESSION_DIR, '.lock');
-                if (fs.existsSync(lockFile)) {
-                    try {
-                        fs.unlinkSync(lockFile);
-                        logger.debug('Removed session lock file', 'CLEANUP');
-                    } catch (e) {
-                        logger.warning('Could not remove lock file: ' + e.message, 'CLEANUP');
-                    }
-                }
-                
-                // Remove leveldb locks
                 try {
-                    const locks = fs.readdirSync(SESSION_DIR).filter(f => f.includes('LOCK'));
-                    locks.forEach(f => {
-                        try {
-                            fs.unlinkSync(path.join(SESSION_DIR, f));
-                        } catch (e) {
-                            // Ignore
+                    const files = fs.readdirSync(SESSION_DIR);
+                    files.forEach(file => {
+                        const filePath = path.join(SESSION_DIR, file);
+                        const stat = fs.statSync(filePath);
+                        
+                        if (file.includes('LOCK') || file.includes('.lock') || file.includes('network') || file.includes('chrome')) {
+                            try {
+                                if (stat.isDirectory()) {
+                                    try {
+                                        execSync(`rm -rf "${filePath}"`, { stdio: 'ignore' });
+                                    } catch (e) {
+                                        // Manual deletion fallback
+                                        const removeRecursive = (dir) => {
+                                            fs.readdirSync(dir).forEach(f => {
+                                                const p = path.join(dir, f);
+                                                if (fs.statSync(p).isDirectory()) {
+                                                    removeRecursive(p);
+                                                } else {
+                                                    fs.unlinkSync(p);
+                                                }
+                                            });
+                                            fs.rmdirSync(dir);
+                                        };
+                                        removeRecursive(filePath);
+                                    }
+                                    logger.debug(`Removed directory: ${file}`, 'CLEANUP');
+                                } else {
+                                    fs.unlinkSync(filePath);
+                                    logger.debug(`Removed file: ${file}`, 'CLEANUP');
+                                }
+                            } catch (e) {
+                                logger.warning(`Could not remove ${file}: ${e.message}`, 'CLEANUP');
+                            }
                         }
                     });
                 } catch (e) {
-                    // Ignore
+                    logger.warning('Session dir cleanup error: ' + e.message, 'CLEANUP');
                 }
             }
 
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 2500));
+            logger.debug('Cleanup complete', 'CLEANUP');
         } catch (error) {
             logger.warning('Chrome cleanup error: ' + error.message, 'CLEANUP');
         }

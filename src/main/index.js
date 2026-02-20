@@ -176,8 +176,10 @@ ipcMain.handle('whatsapp:start', async (event) => {
                     retries--;
                     
                     if (retries > 0) {
-                        console.log(`WhatsApp startup failed, retrying... (${retries} left)`);
-                        await new Promise(r => setTimeout(r, 2000)); // Wait 2s before retry
+                        console.log(`❌ WhatsApp startup failed, retrying... (${retries} left)`);
+                        console.log(`⏳ Aggressive cleanup + wait 4 seconds...`);
+                        await killLingeringProcesses();
+                        await new Promise(r => setTimeout(r, 4000)); // Longer wait
                     }
                 }
             }
@@ -237,9 +239,10 @@ ipcMain.handle('whatsapp:restart', async (event) => {
                 retries--;
                 
                 if (retries > 0) {
-                    console.log(`WhatsApp restart attempt failed, retrying... (${retries} left)`);
+                    console.log(`❌ WhatsApp restart attempt failed, retrying... (${retries} left)`);
+                    console.log(`⏳ Aggressive cleanup + wait 4 seconds...`);
                     await killLingeringProcesses();
-                    await new Promise(r => setTimeout(r, 2000));
+                    await new Promise(r => setTimeout(r, 4000));
                 }
             }
         }
@@ -469,54 +472,97 @@ function setupMessageHandler(config) {
 }
 
 async function killLingeringProcesses() {
-    const { execSync } = require('child_process');
-    const os = require('os');
-    const fs = require('fs');
+    const { execSync, spawnSync } = require('child_process');
+    const rimraf = require('rimraf');
     
     try {
-        // Kill Chrome/Chromium processes that might be holding session lock
+        console.log('[CLEANUP] Starting aggressive browser cleanup...');
+        
+        // Multiple methods to kill Chrome processes
         try {
-            if (process.platform !== 'win32') {
-                execSync('pkill -f "chromium|google-chrome" 2>/dev/null || true', { stdio: 'ignore' });
-                console.log('[CLEANUP] Killed lingering Chrome processes');
-            } else {
-                execSync('taskkill /F /IM chrome.exe 2>nul || call', { stdio: 'ignore' });
-                console.log('[CLEANUP] Killed Chrome on Windows');
-            }
+            // Method 1: pkill
+            execSync('pkill -9 -f "chromium|google-chrome|chrome" || true', { stdio: 'ignore' });
+            console.log('[CLEANUP] Method 1: pkill executed');
         } catch (e) {
-            // Ignore - command might fail if no processes exist
+            // Ignore
         }
 
-        // Clean up session lock files
-        const sessionDir = path.join(os.homedir(), '.whatsapp-agent', 'session');
-        if (fs.existsSync(sessionDir)) {
-            const lockFile = path.join(sessionDir, '.lock');
-            if (fs.existsSync(lockFile)) {
-                try {
-                    fs.unlinkSync(lockFile);
-                    console.log('[CLEANUP] Removed session lock file');
-                } catch (e) {
-                    console.warn('[CLEANUP] Could not remove lock file:', e.message);
-                }
-            }
-            
-            // Also try to remove leveldb locks
+        try {
+            // Method 2: killall
+            execSync('killall -9 chrome chromium 2>/dev/null || true', { stdio: 'ignore' });
+            console.log('[CLEANUP] Method 2: killall executed');
+        } catch (e) {
+            // Ignore
+        }
+
+        try {
+            // Method 3: ps + grep + kill
+            const result = spawnSync('bash', ['-c', 'ps aux | grep -i "chromium\\|google-chrome" | grep -v grep | awk \'{print $2}\' | xargs kill -9 2>/dev/null || true'], { stdio: 'ignore' });
+            console.log('[CLEANUP] Method 3: ps+grep executed');
+        } catch (e) {
+            // Ignore
+        }
+
+        // Windows fallback
+        if (process.platform === 'win32') {
             try {
-                const lockFiles = fs.readdirSync(sessionDir).filter(f => f.includes('LOCK'));
-                lockFiles.forEach(f => {
-                    try {
-                        fs.unlinkSync(path.join(sessionDir, f));
-                        console.log(`[CLEANUP] Removed ${f}`);
-                    } catch (e) {
-                        // Ignore individual failures
-                    }
-                });
+                execSync('taskkill /F /IM chrome.exe /IM chromium.exe 2>nul || call', { stdio: 'ignore' });
+                console.log('[CLEANUP] Windows: taskkill executed');
             } catch (e) {
                 // Ignore
             }
         }
 
-        await new Promise(r => setTimeout(r, 1000)); // Wait for cleanup
+        // Clean up session directory aggressively
+        const sessionDir = path.join(os.homedir(), '.whatsapp-agent', 'session');
+        if (fs.existsSync(sessionDir)) {
+            try {
+                // Remove all lock files and temp files
+                const files = fs.readdirSync(sessionDir);
+                files.forEach(file => {
+                    const filePath = path.join(sessionDir, file);
+                    const stat = fs.statSync(filePath);
+                    
+                    // Remove lock files, temp files, and Chrome user data cache
+                    if (file.includes('LOCK') || file.includes('.lock') || file.includes('network') || file.includes('chrome')) {
+                        try {
+                            if (stat.isDirectory()) {
+                                // Recursive remove directory
+                                try {
+                                    execSync(`rm -rf "${filePath}"`, { stdio: 'ignore' });
+                                } catch (e) {
+                                    // Fallback: manual deletion
+                                    const removeRecursive = (dir) => {
+                                        fs.readdirSync(dir).forEach(f => {
+                                            const p = path.join(dir, f);
+                                            if (fs.statSync(p).isDirectory()) {
+                                                removeRecursive(p);
+                                            } else {
+                                                fs.unlinkSync(p);
+                                            }
+                                        });
+                                        fs.rmdirSync(dir);
+                                    };
+                                    removeRecursive(filePath);
+                                }
+                                console.log(`[CLEANUP] Removed directory: ${file}`);
+                            } else {
+                                fs.unlinkSync(filePath);
+                                console.log(`[CLEANUP] Removed file: ${file}`);
+                            }
+                        } catch (e) {
+                            console.warn(`[CLEANUP] Could not remove ${file}: ${e.message}`);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.warn('[CLEANUP] Session dir cleanup error:', e.message);
+            }
+        }
+
+        // Wait longer for processes to die
+        await new Promise(r => setTimeout(r, 2500));
+        console.log('[CLEANUP] Cleanup complete');
     } catch (error) {
         console.warn('[CLEANUP] Error during process cleanup:', error.message);
     }
