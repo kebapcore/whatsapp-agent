@@ -5,7 +5,7 @@
   "main": "src/main/index.js",
   "homepage": "./",
   "scripts": {
-    "start": "concurrently \"npm run electron\" \"npm run dev\"",
+    "start": "concurrently \"npm run electron -- --dev\" \"npm run dev\"",
     "dev": "vite",
     "build": "vite build",
     "electron": "electron .",

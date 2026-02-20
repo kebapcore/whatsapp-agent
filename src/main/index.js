@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const path = require('path');
-// isDev olup olmadığını kontrol et - args'a '--dev' flag'i eklenebilir
-const isDev = process.argv.includes('--dev') || !require('fs').existsSync(path.join(__dirname, '../../dist'));
+// isDev: development modda ise, dist/index.html dosyası yoksa dev server'a bağlan
+const isDev = process.argv.includes('--dev') || !require('fs').existsSync(path.join(__dirname, '../../dist/index.html'));
 const { startWhatsAppService } = require('../backend/whatsapp-service');
 const { ConfigManager } = require('../backend/config-manager');
 const { HistoryManager } = require('../backend/history-manager');
