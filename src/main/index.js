@@ -185,7 +185,7 @@ ipcMain.handle('whatsapp:get-qr', async (event) => {
 
 ipcMain.handle('whatsapp:is-ready', async (event) => {
     if (!whatsappService) return false;
-    return whatsappService.isReady();
+    return whatsappService.isReady;
 });
 
 ipcMain.handle('whatsapp:get-status', async (event) => {

@@ -99,10 +99,36 @@ const Dashboard = () => {
         try {
             setLoading(true);
             await window.electron.startWhatsApp();
-            checkWhatsAppStatus();
+            
+            // Poll until WhatsApp is ready (with timeout)
+            let attempts = 0;
+            const maxAttempts = 60; // 30 seconds max
+            
+            while (attempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms before checking
+                
+                const isReady = await window.electron.isWhatsAppReady();
+                if (isReady) {
+                    setWhatsappReady(true);
+                    setQrCode(null);
+                    const currentStatus = await window.electron.getWhatsAppStatus();
+                    setStatus(currentStatus);
+                    setLoading(false);
+                    return;
+                }
+                
+                // Get QR code if not ready yet
+                const qr = await window.electron.getQRCode();
+                setQrCode(qr);
+                
+                attempts++;
+            }
+            
+            // If we timeout, still show dashboard in case of issues
+            setLoading(false);
+            addLog('WhatsApp initialization timeout', 'warning');
         } catch (error) {
             addLog(`Startup error: ${error.message}`, 'error');
-        } finally {
             setLoading(false);
         }
     };
