@@ -31,21 +31,65 @@ function createWindow() {
     });
 
     // Dev mode: connect to vite server; Production: load from dist
-    const startUrl = isDev
-        ? 'http://localhost:5173'
-        : `file://${path.join(__dirname, '../../dist/index.html')}`;
+    const devUrl = 'http://localhost:5173';
+    const prodUrl = `file://${path.join(__dirname, '../../dist/index.html')}`;
 
-    console.log(`Loading URL: ${startUrl}`);
-    mainWindow.loadURL(startUrl).catch(err => {
-        console.error('Failed to load URL:', err);
-    });
-
-    if (isDev) {
-        mainWindow.webContents.openDevTools();
+    async function loadAppropriateUrl() {
+        try {
+            if (isDev) {
+                // Wait for Vite dev server to be reachable before loading.
+                await waitForPort(5173, '127.0.0.1', 10000);
+                console.log(`Loading dev URL: ${devUrl}`);
+                await mainWindow.loadURL(devUrl);
+                mainWindow.webContents.openDevTools();
+            } else {
+                console.log(`Loading prod URL: ${prodUrl}`);
+                await mainWindow.loadURL(prodUrl);
+            }
+        } catch (err) {
+            console.error('Failed to load URL:', err);
+            // Fallback: try prod URL if dev fails
+            if (isDev) {
+                try {
+                    await mainWindow.loadURL(prodUrl);
+                } catch (e) {
+                    console.error('Fallback load failed:', e);
+                }
+            }
+        }
     }
+
+    loadAppropriateUrl();
 
     mainWindow.on('closed', () => {
         mainWindow = null;
+    });
+}
+
+function waitForPort(port, host = '127.0.0.1', timeout = 10000) {
+    const net = require('net');
+    const start = Date.now();
+
+    return new Promise((resolve, reject) => {
+        const tryConnect = () => {
+            const socket = new net.Socket();
+            socket.setTimeout(2000);
+            socket.once('error', () => {
+                socket.destroy();
+                if (Date.now() - start > timeout) return reject(new Error('Timeout waiting for port'));
+                setTimeout(tryConnect, 300);
+            });
+            socket.once('timeout', () => {
+                socket.destroy();
+                if (Date.now() - start > timeout) return reject(new Error('Timeout waiting for port'));
+                setTimeout(tryConnect, 300);
+            });
+            socket.connect(port, host, () => {
+                socket.end();
+                resolve(true);
+            });
+        };
+        tryConnect();
     });
 }
 
