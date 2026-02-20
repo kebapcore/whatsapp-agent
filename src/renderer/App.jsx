@@ -16,6 +16,14 @@ function App() {
 
     const checkConfiguration = async () => {
         try {
+            // Fallback: window.electron undefined controlü
+            if (!window.electron) {
+                console.warn('window.electron not available yet, assuming not configured');
+                setIsConfigured(false);
+                setIsLoading(false);
+                return;
+            }
+            
             const hasConfig = await window.electron.checkConfigExists();
             setIsConfigured(hasConfig);
         } catch (error) {

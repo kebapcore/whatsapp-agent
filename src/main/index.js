@@ -30,11 +30,15 @@ function createWindow() {
         icon: path.join(__dirname, '../../public/icon.png')
     });
 
+    // Dev mode: connect to vite server; Production: load from dist
     const startUrl = isDev
         ? 'http://localhost:5173'
         : `file://${path.join(__dirname, '../../dist/index.html')}`;
 
-    mainWindow.loadURL(startUrl);
+    console.log(`Loading URL: ${startUrl}`);
+    mainWindow.loadURL(startUrl).catch(err => {
+        console.error('Failed to load URL:', err);
+    });
 
     if (isDev) {
         mainWindow.webContents.openDevTools();

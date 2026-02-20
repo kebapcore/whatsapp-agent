@@ -13,7 +13,7 @@ export default defineConfig({
         outDir: 'dist',
         emptyOutDir: true,
         target: 'esnext',
-        minify: 'terser'
+        minify: false
     },
     resolve: {
         alias: {
