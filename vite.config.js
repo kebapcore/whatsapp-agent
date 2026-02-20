@@ -4,10 +4,14 @@ import path from 'path';
 
 export default defineConfig({
     plugins: [react()],
+    root: './',
     server: {
         port: 5173,
         strictPort: false,
-        host: 'localhost'
+        host: 'localhost',
+        fs: {
+            strict: false
+        }
     },
     build: {
         outDir: 'dist',
