@@ -292,7 +292,6 @@ class GeminiService {
                 }],
                 generationConfig: {
                     temperature: config.temperature || 0.7,
-                    response_mime_type: 'application/json',
                     top_p: 0.95,
                     top_k: 40
                 }
