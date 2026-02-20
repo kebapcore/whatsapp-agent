@@ -1,0 +1,190 @@
+Build a Node.js WhatsApp automation bot using whatsapp-web.js.
+
+The bot must run continuously and automatically process incoming messages using Google Gemini.
+
+AI MODEL:
+- gemini-2.5-flash
+- grounding with Google Search enabled if available
+- all reasoning/context tools enabled if supported
+
+--------------------------------------------------
+SYSTEM OVERVIEW
+--------------------------------------------------
+
+This system is NOT a simple auto-reply bot.
+
+Gemini is a messaging controller.
+
+Gemini decides:
+- who to respond to
+- whether to respond
+- whether to message someone else
+- whether to request operator input
+
+All communication is structured JSON.
+
+--------------------------------------------------
+GEMINI SYSTEM INSTRUCTION FILE
+--------------------------------------------------
+
+Create a file:
+
+gemini.txt
+
+This file contains the permanent system instruction.
+It is always loaded as the system prompt.
+
+--------------------------------------------------
+INPUT FORMAT (STRICT JSON)
+--------------------------------------------------
+
+Every incoming message must be converted into:
+
+{
+  "person": "contact name from phonebook",
+  "time": "day month year hour:minute",
+  "message": "full original message content"
+}
+
+Example:
+
+{
+  "person": "Ahmet Kaya",
+  "time": "19 February 2026 21:43",
+  "message": "Are you available tomorrow?"
+}
+
+This JSON is sent to Gemini.
+
+--------------------------------------------------
+ATTACHMENTS
+--------------------------------------------------
+
+If the message includes media:
+
+- image
+- pdf
+- document
+- audio
+- video
+
+Attach them to the Gemini request as context files.
+
+--------------------------------------------------
+OUTPUT FORMAT (STRICT JSON)
+--------------------------------------------------
+
+Gemini must ALWAYS return JSON:
+
+{
+  "person": "target contact name OR system",
+  "message": "message content"
+}
+
+NO extra text.
+NO markdown.
+NO explanation.
+ONLY valid JSON.
+
+--------------------------------------------------
+OUTPUT LOGIC
+--------------------------------------------------
+
+If person is a real contact:
+→ send message to that WhatsApp contact
+
+If person is "system":
+→ DO NOT send WhatsApp message
+→ print message to terminal
+→ wait for human operator input
+→ send operator response back to Gemini as new input JSON:
+
+{
+  "person": "system",
+  "time": "current timestamp",
+  "message": "operator typed message"
+}
+
+This allows live operator interaction.
+
+--------------------------------------------------
+NO RESPONSE CASE
+--------------------------------------------------
+
+If Gemini wants to mark a message as seen and do nothing:
+
+Return:
+
+{
+  "person": "none",
+  "message": ""
+}
+
+System behavior:
+- mark message as seen
+- send nothing
+- no terminal interaction
+
+--------------------------------------------------
+FREE TARGET MESSAGING
+--------------------------------------------------
+
+Gemini may send messages to ANY contact at ANY time.
+
+It is not limited to replying to the sender.
+
+--------------------------------------------------
+BOT REQUIREMENTS
+--------------------------------------------------
+
+- persistent login session
+- QR login once then saved
+- runs continuously
+- handles text and media
+- structured logging
+- error handling
+- terminal interaction loop
+- background execution
+
+--------------------------------------------------
+MESSAGE FLOW
+--------------------------------------------------
+
+Incoming WhatsApp message →
+Convert to JSON →
+Attach media if exists →
+Send to Gemini →
+Receive JSON output →
+
+IF person = real contact:
+    send message
+
+IF person = system:
+    print to terminal
+    wait operator input
+    send operator input to Gemini
+
+IF person = none:
+    mark seen only
+
+--------------------------------------------------
+STRICT GEMINI BEHAVIOR RULES
+--------------------------------------------------
+
+Gemini is a messaging orchestrator.
+
+Gemini must never:
+- explain decisions
+- output text outside JSON
+- include formatting
+- include commentary
+
+Gemini controls communication routing.
+
+--------------------------------------------------
+FINAL GOAL
+--------------------------------------------------
+
+An autonomous AI messaging controller
+with human intervention channel
+and fully structured JSON communication.
