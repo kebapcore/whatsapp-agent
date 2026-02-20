@@ -18,12 +18,7 @@ export default defineConfig({
         outDir: 'dist',
         emptyOutDir: true,
         target: 'esnext',
-        minify: false,
-        rollupOptions: {
-            input: {
-                main: path.resolve(__dirname, 'index.html')
-            }
-        }
+        minify: false
     },
     resolve: {
         alias: {
