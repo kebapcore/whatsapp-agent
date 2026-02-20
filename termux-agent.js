@@ -269,6 +269,12 @@ class GeminiService {
             throw new Error('Gemini API key not configured');
         }
 
+        // Check API key validity
+        if (this.apiKey === 'YOUR_GEMINI_API_KEY_HERE' || this.apiKey.length < 10) {
+            logger.error('Invalid or unconfigured Gemini API key', 'GEMINI');
+            throw new Error('Invalid Gemini API key - please check configuration');
+        }
+
         try {
             const payload = {
                 system_instruction: {
@@ -292,6 +298,8 @@ class GeminiService {
                 }
             };
 
+            logger.debug(`Sending Gemini request to model: ${this.model}`, 'GEMINI');
+
             const response = await axios.post(
                 `${this.baseURL}/${this.model}:generateContent?key=${this.apiKey}`,
                 payload,
@@ -310,12 +318,19 @@ class GeminiService {
 
             throw new Error('Invalid Gemini response format');
         } catch (error) {
-            logger.error('Gemini API error: ' + error.message, 'GEMINI');
-
-            if (error.response?.status === 401) {
-                throw new Error('Invalid Gemini API key');
-            } else if (error.response?.status === 429) {
-                throw new Error('Gemini rate limit exceeded');
+            // Detailed error logging
+            if (error.response) {
+                logger.error(`[GEMINI] Status ${error.response.status}: ${error.response.data?.error?.message || error.message}`, 'GEMINI');
+                
+                if (error.response.status === 400) {
+                    logger.error('Bad Request (400) - Check API key, model name, and payload format', 'GEMINI');
+                } else if (error.response.status === 401) {
+                    logger.error('Unauthorized (401) - Invalid API key', 'GEMINI');
+                } else if (error.response.status === 429) {
+                    logger.error('Rate Limited (429) - Too many requests', 'GEMINI');
+                }
+            } else {
+                logger.error('Gemini API error: ' + error.message, 'GEMINI');
             }
 
             throw error;

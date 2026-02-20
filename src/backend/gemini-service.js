@@ -82,6 +82,16 @@ class GeminiService {
                 ];
             }
 
+            // Debug: Check API key
+            if (!this.apiKey || this.apiKey === 'YOUR_GEMINI_API_KEY_HERE' || this.apiKey.length < 10) {
+                console.error('[GEMINI] ❌ Invalid API key detected:', this.apiKey ? `[${this.apiKey.substring(0, 5)}...]` : 'EMPTY');
+                throw new Error('Invalid or unconfigured Gemini API key');
+            }
+
+            // Debug: Log request (sanitized)
+            console.log('[GEMINI] Sending request to:', `${this.baseURL}/${this.model}:generateContent`);
+            console.log('[GEMINI] Payload size:', JSON.stringify(payload).length, 'bytes');
+
             const response = await axios.post(
                 `${this.baseURL}/${this.model}:generateContent?key=${this.apiKey}`,
                 payload,
@@ -114,13 +124,28 @@ class GeminiService {
 
             throw new Error('No valid response from Gemini API');
         } catch (error) {
-            console.error('Gemini API error:', error.message);
-
-            if (error.response?.status === 401) {
-                throw new Error('Invalid Gemini API key');
-            } else if (error.response?.status === 429) {
-                throw new Error('Gemini API rate limit exceeded');
+            // Detailed error logging
+            console.error('[GEMINI] ❌ API Error:', error.message);
+            
+            if (error.response) {
+                console.error('[GEMINI] Status:', error.response.status);
+                console.error('[GEMINI] Response body:', JSON.stringify(error.response.data, null, 2));
+                
+                if (error.response.status === 400) {
+                    console.error('[GEMINI] 400 Bad Request - Check:');
+                    console.error('  1. API key is valid');
+                    console.error('  2. Model name is correct');
+                    console.error('  3. Payload format matches Gemini API specs');
+                    throw new Error(`Gemini API error (400): ${error.response.data?.error?.message || 'Invalid request'}`);
+                } else if (error.response.status === 401) {
+                    console.error('[GEMINI] 401 Unauthorized - Invalid API key');
+                    throw new Error('Invalid Gemini API key');
+                } else if (error.response.status === 429) {
+                    console.error('[GEMINI] 429 Rate Limited');
+                    throw new Error('Gemini API rate limit exceeded');
+                }
             } else if (error.code === 'ECONNABORTED') {
+                console.error('[GEMINI] Request timeout');
                 throw new Error('Gemini API request timeout');
             }
 
