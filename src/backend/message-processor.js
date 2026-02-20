@@ -52,12 +52,25 @@ class MessageProcessor {
                 };
             }
 
-            // Record in history
+            // Record in history (normalize keys to HistoryManager format)
             geminiResponse.aiResponse = geminiResponse.content || null;
-            this.historyManager.addMessage({
-                ...inputData,
-                aiResponse: geminiResponse.aiResponse
-            });
+            try {
+                this.historyManager.addMessage({
+                    messageId: inputData.message_id || inputData.messageId,
+                    timestamp: inputData.timestamp || new Date().toISOString(),
+                    senderId: inputData.sender_id || inputData.senderId,
+                    senderName: inputData.sender_name || inputData.senderName,
+                    isGroup: inputData.is_group || inputData.isGroup,
+                    chatName: inputData.chat_name || inputData.chatName || 'Private',
+                    content: inputData.content || inputData.body || '',
+                    isReply: inputData.is_reply || inputData.isReply || false,
+                    replyContext: inputData.reply_context || inputData.replyContext || null,
+                    aiResponse: geminiResponse.aiResponse,
+                    attachments: inputData.attachments || []
+                });
+            } catch (e) {
+                this.log(`Failed to record in history: ${e.message}`, 'warning', 'processor');
+            }
 
             return geminiResponse;
         } catch (error) {

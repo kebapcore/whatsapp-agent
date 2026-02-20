@@ -147,10 +147,19 @@ ipcMain.handle('whatsapp:start', async (event) => {
     try {
         if (!whatsappService) {
             const config = ConfigManager.getConfig();
+            
+            // Initialize services if not already initialized
+            if (!geminiService || !messageProcessor) {
+                await reinitializeServices(config);
+            }
+            
             whatsappService = await startWhatsAppService(
                 config,
                 (log) => mainWindow?.webContents.send('log:new', log)
             );
+            
+            // Set up message handler after WhatsApp is ready
+            setupMessageHandler(config);
         }
         return { success: true };
     } catch (error) {
@@ -278,6 +287,117 @@ ipcMain.handle('history:clear', async (event) => {
 // ============================================================
 // Helper Functions
 // ============================================================
+
+function setupMessageHandler(config) {
+    if (!whatsappService || !messageProcessor) return;
+
+    whatsappService.onMessage(async (msg) => {
+        try {
+            // Skip own messages
+            if (msg.fromMe) return;
+
+            const chat = await msg.getChat();
+            const contact = await msg.getContact();
+            
+            // Get quoted message if exists
+            let quotedMsg = null;
+            if (msg.hasQuotedMsg) {
+                try {
+                    quotedMsg = await msg.getQuotedMessage();
+                } catch (err) {
+                    console.log('Could not retrieve quoted message:', err.message);
+                }
+            }
+
+            const senderName = contact.pushname || contact.name || contact.number;
+
+            // Build input data (same structure as old version)
+            const inputData = {
+                message_id: msg.id._serialized,
+                timestamp: new Date().toLocaleString('tr-TR'),
+                is_group: chat.isGroup,
+                chat_name: chat.isGroup ? chat.name : 'Private',
+                sender_id: contact.id._serialized,
+                sender_name: senderName,
+                content: msg.body,
+                is_reply: !!quotedMsg,
+                reply_context: quotedMsg ? {
+                    sender: quotedMsg._data?.notifyName || 'Unknown',
+                    text: quotedMsg.body
+                } : null,
+                chat_id: chat.id._serialized,
+                isMentioned: msg.mentionedIds?.includes(whatsappService.client.info.wid._serialized) || false,
+                isReplyToBot: quotedMsg ? quotedMsg.fromMe : false
+            };
+
+            // Check if we should process this message
+            if (!messageProcessor.shouldProcess(inputData, config)) {
+                console.log(`[PROCESSOR] Skipping message - does not match processing rules`);
+                return;
+            }
+
+            console.log(`[MESSAGE] Received from ${senderName}: "${msg.body.substring(0, 50)}..."`);
+
+            // Persist incoming message to history so Gemini has context
+            try {
+                historyManager.addMessage({
+                    messageId: inputData.message_id,
+                    timestamp: inputData.timestamp,
+                    senderId: inputData.sender_id,
+                    senderName: inputData.sender_name,
+                    isGroup: inputData.is_group,
+                    chatName: inputData.chat_name,
+                    content: inputData.content,
+                    isReply: inputData.is_reply,
+                    replyContext: inputData.reply_context,
+                    attachments: []
+                });
+            } catch (e) {
+                console.warn('History save failed:', e.message);
+            }
+
+            // Set typing indicator
+            if (!chat.isGroup) {
+                await whatsappService.setTyping(chat.id._serialized, true);
+            }
+
+            // Process message with Gemini
+            const result = await messageProcessor.processMessage(inputData, config);
+
+            // Clear typing indicator
+            if (!chat.isGroup) {
+                await whatsappService.setTyping(chat.id._serialized, false);
+            }
+
+            // Send response
+            if (result.action === 'reply' && result.content) {
+                console.log(`[RESPONSE] Sending reply to ${senderName}`);
+                await whatsappService.sendMessage(
+                    chat.id._serialized,
+                    result.content,
+                    inputData.message_id
+                );
+            } else if (result.action === 'operator') {
+                // Notify operator escalation
+                mainWindow?.webContents.send('operator:escalation', {
+                    message: result.message,
+                    originalData: inputData
+                });
+                console.log(`[OPERATOR] Escalation needed: ${result.message}`);
+            }
+        } catch (err) {
+            console.error('[MESSAGE] Error processing message:', err);
+            mainWindow?.webContents.send('log:new', {
+                level: 'error',
+                source: 'message-handler',
+                message: `Message processing error: ${err.message}`,
+                timestamp: new Date()
+            });
+        }
+    });
+
+    console.log('[INIT] Message handler setup complete');
+}
 
 async function reinitializeServices(config) {
     try {
