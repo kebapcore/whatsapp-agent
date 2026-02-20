@@ -153,10 +153,38 @@ ipcMain.handle('whatsapp:start', async (event) => {
                 await reinitializeServices(config);
             }
             
-            whatsappService = await startWhatsAppService(
-                config,
-                (log) => mainWindow?.webContents.send('log:new', log)
-            );
+            // Kill any lingering Chrome processes from previous session
+            try {
+                await killLingeringProcesses();
+            } catch (e) {
+                console.warn('Chrome cleanup warning:', e.message);
+            }
+            
+            // Start WhatsApp with retry logic
+            let retries = 3;
+            let lastError = null;
+            
+            while (retries > 0) {
+                try {
+                    whatsappService = await startWhatsAppService(
+                        config,
+                        (log) => mainWindow?.webContents.send('log:new', log)
+                    );
+                    break; // Success
+                } catch (error) {
+                    lastError = error;
+                    retries--;
+                    
+                    if (retries > 0) {
+                        console.log(`WhatsApp startup failed, retrying... (${retries} left)`);
+                        await new Promise(r => setTimeout(r, 2000)); // Wait 2s before retry
+                    }
+                }
+            }
+            
+            if (!whatsappService) {
+                throw lastError || new Error('Failed to start WhatsApp after retries');
+            }
             
             // Set up message handler after WhatsApp is ready
             setupMessageHandler(config);
@@ -164,6 +192,7 @@ ipcMain.handle('whatsapp:start', async (event) => {
         return { success: true };
     } catch (error) {
         console.error('WhatsApp start error:', error);
+        whatsappService = null; // Reset on failure
         return { success: false, error: error.message };
     }
 });
@@ -171,18 +200,58 @@ ipcMain.handle('whatsapp:start', async (event) => {
 ipcMain.handle('whatsapp:restart', async (event) => {
     try {
         if (whatsappService) {
-            await whatsappService.logout();
+            try {
+                await whatsappService.logout();
+            } catch (e) {
+                console.warn('Logout warning:', e.message);
+            }
             whatsappService = null;
+            
+            // Kill lingering processes
+            try {
+                await killLingeringProcesses();
+            } catch (e) {
+                console.warn('Process cleanup warning:', e.message);
+            }
+            
+            // Wait for cleanup
+            await new Promise(r => setTimeout(r, 2000));
         }
         
         const config = ConfigManager.getConfig();
-        whatsappService = await startWhatsAppService(
-            config,
-            (log) => mainWindow?.webContents.send('log:new', log)
-        );
+        
+        // Restart with retry logic
+        let retries = 3;
+        let lastError = null;
+        
+        while (retries > 0) {
+            try {
+                whatsappService = await startWhatsAppService(
+                    config,
+                    (log) => mainWindow?.webContents.send('log:new', log)
+                );
+                setupMessageHandler(config);
+                break;
+            } catch (error) {
+                lastError = error;
+                retries--;
+                
+                if (retries > 0) {
+                    console.log(`WhatsApp restart attempt failed, retrying... (${retries} left)`);
+                    await killLingeringProcesses();
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+            }
+        }
+        
+        if (!whatsappService) {
+            throw lastError || new Error('Failed to restart WhatsApp');
+        }
+        
         return { success: true };
     } catch (error) {
         console.error('WhatsApp restart error:', error);
+        whatsappService = null;
         return { success: false, error: error.message };
     }
 });
@@ -397,6 +466,60 @@ function setupMessageHandler(config) {
     });
 
     console.log('[INIT] Message handler setup complete');
+}
+
+async function killLingeringProcesses() {
+    const { execSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    
+    try {
+        // Kill Chrome/Chromium processes that might be holding session lock
+        try {
+            if (process.platform !== 'win32') {
+                execSync('pkill -f "chromium|google-chrome" 2>/dev/null || true', { stdio: 'ignore' });
+                console.log('[CLEANUP] Killed lingering Chrome processes');
+            } else {
+                execSync('taskkill /F /IM chrome.exe 2>nul || call', { stdio: 'ignore' });
+                console.log('[CLEANUP] Killed Chrome on Windows');
+            }
+        } catch (e) {
+            // Ignore - command might fail if no processes exist
+        }
+
+        // Clean up session lock files
+        const sessionDir = path.join(os.homedir(), '.whatsapp-agent', 'session');
+        if (fs.existsSync(sessionDir)) {
+            const lockFile = path.join(sessionDir, '.lock');
+            if (fs.existsSync(lockFile)) {
+                try {
+                    fs.unlinkSync(lockFile);
+                    console.log('[CLEANUP] Removed session lock file');
+                } catch (e) {
+                    console.warn('[CLEANUP] Could not remove lock file:', e.message);
+                }
+            }
+            
+            // Also try to remove leveldb locks
+            try {
+                const lockFiles = fs.readdirSync(sessionDir).filter(f => f.includes('LOCK'));
+                lockFiles.forEach(f => {
+                    try {
+                        fs.unlinkSync(path.join(sessionDir, f));
+                        console.log(`[CLEANUP] Removed ${f}`);
+                    } catch (e) {
+                        // Ignore individual failures
+                    }
+                });
+            } catch (e) {
+                // Ignore
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 1000)); // Wait for cleanup
+    } catch (error) {
+        console.warn('[CLEANUP] Error during process cleanup:', error.message);
+    }
 }
 
 async function reinitializeServices(config) {

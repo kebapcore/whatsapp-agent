@@ -1,0 +1,732 @@
+#!/usr/bin/env node
+
+/**
+ * =====================================================
+ * WhatsApp AI Agent - Termux Edition (7/24 Operation)
+ * =====================================================
+ * 
+ * Self-contained agent for Termux with:
+ * - Built-in configuration
+ * - Social awareness & group handling
+ * - Gemini AI integration
+ * - Persistent history & statistics
+ * - Auto-reconnect & recovery
+ * - Optimized for low-resource phones
+ * 
+ * Usage: node termux-agent.js
+ * Deploy: Use cron or pm2-start for 7/24 operation
+ */
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// ==================== DEPENDENCIES ====================
+let Client, LocalAuth;
+try {
+    const wweb = require('whatsapp-web.js');
+    Client = wweb.Client;
+    LocalAuth = wweb.LocalAuth;
+} catch (e) {
+    console.error('❌ whatsapp-web.js not installed. Run: npm install whatsapp-web.js');
+    process.exit(1);
+}
+
+const axios = require('axios');
+const qrcode = require('qrcode-terminal');
+
+// ==================== CONFIGURATION ====================
+
+const HOME_DIR = os.homedir();
+const APP_DIR = path.join(HOME_DIR, '.whatsapp-agent-termux');
+const CONFIG_FILE = path.join(APP_DIR, 'config.json');
+const HISTORY_FILE = path.join(APP_DIR, 'history.json');
+const SESSION_DIR = path.join(APP_DIR, 'session');
+const LOG_FILE = path.join(APP_DIR, 'agent.log');
+
+// Ensure directories exist
+[APP_DIR, SESSION_DIR].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+// Default configuration
+const DEFAULT_CONFIG = {
+    gemini: {
+        apiKey: '', // SET THIS
+        model: 'gemini-2.5-flash',
+        temperature: 0.7
+    },
+    messageHandling: {
+        autoReplyEnabled: true,
+        typingSimulation: true,
+        groupHandling: 'mention_only', // 'always' | 'mention_only' | 'ignore'
+        learningMode: true
+    },
+    browser: {
+        headless: true,
+        sandbox: false,
+        performanceMode: true
+    },
+    operatorEscalation: {
+        requestHelpWhenNeeded: true
+    },
+    storage: {
+        historyLimit: 100,
+        logLevel: 'info' // 'debug' | 'info' | 'warning' | 'error'
+    },
+    personalization: {
+        name: 'Şamil',
+        personality: 'chill and casual 8th grader',
+        interests: 'anime, games, tech, psychology'
+    }
+};
+
+// System instruction for Gemini
+const SYSTEM_INSTRUCTION = `You are Şamil, a highly advanced autonomous messaging agent.
+
+OUTPUT RULES (CRITICAL):
+1. MUST output valid JSON (NO markdown)
+2. Structure: {"action": "reply"|"ignore"|"operator", "content": "...", "thought_process": "..."}
+
+PERSONALITY:
+- Casual, chill, Gen Z internet culture
+- Lowercase letters (no shouting)
+- NO emojis, keep it real
+- Occasional slang: "bro", "ya", "lan", "aga", "kanka"
+- Interests: Anime (Re:Zero), psychology, games, tech, Linux
+
+RULES:
+- Private messages: ALWAYS process
+- Group: Only reply if mentioned, replied-to, or groupHandling='always'
+- One-word messages in groups: IGNORE (unless mentioned)
+- Technical questions: Show enthusiasm but stay cool
+- Don't be robotic, be human-like
+
+SOCIAL AWARENESS:
+You receive message history and sender statistics. Use them to understand context and relationships.`;
+
+// ==================== LOGGER ====================
+
+class Logger {
+    constructor(logFile, logLevel = 'info') {
+        this.logFile = logFile;
+        this.logLevel = logLevel;
+        this.levels = { debug: 0, info: 1, warning: 2, error: 3 };
+    }
+
+    log(level, message, source = 'AGENT') {
+        const timestamp = new Date().toLocaleString('tr-TR');
+        const levelStr = level.toUpperCase().padEnd(7);
+        const logEntry = `[${timestamp}] [${levelStr}] [${source}] ${message}`;
+
+        // Console
+        if (this.levels[level] >= this.levels[this.logLevel]) {
+            console.log(logEntry);
+        }
+
+        // File
+        try {
+            fs.appendFileSync(this.logFile, logEntry + '\n');
+        } catch (e) {
+            console.error('Failed to write log:', e.message);
+        }
+    }
+
+    debug(msg, src) { this.log('debug', msg, src); }
+    info(msg, src) { this.log('info', msg, src); }
+    warning(msg, src) { this.log('warning', msg, src); }
+    error(msg, src) { this.log('error', msg, src); }
+}
+
+// ==================== CONFIG MANAGER ====================
+
+class ConfigManager {
+    static load() {
+        if (!fs.existsSync(CONFIG_FILE)) {
+            logger.warning('Config not found, creating default');
+            this.save(DEFAULT_CONFIG);
+            return DEFAULT_CONFIG;
+        }
+
+        try {
+            const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+            // Deep merge with defaults
+            return { ...DEFAULT_CONFIG, ...config };
+        } catch (e) {
+            logger.error('Config parse error: ' + e.message, 'CONFIG');
+            return DEFAULT_CONFIG;
+        }
+    }
+
+    static save(config) {
+        try {
+            fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+            logger.info('Config saved to ' + CONFIG_FILE, 'CONFIG');
+        } catch (e) {
+            logger.error('Config save error: ' + e.message, 'CONFIG');
+        }
+    }
+
+    static editViaTermux() {
+        console.log('\n📝 Your config file is at:');
+        console.log(CONFIG_FILE);
+        console.log('\nEdit with: nano ' + CONFIG_FILE);
+    }
+}
+
+// ==================== HISTORY MANAGER ====================
+
+class HistoryManager {
+    constructor(maxSize = 100) {
+        this.maxSize = maxSize;
+        this.history = this.load();
+    }
+
+    load() {
+        if (!fs.existsSync(HISTORY_FILE)) return [];
+        try {
+            return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+        } catch (e) {
+            logger.warning('History load error, starting fresh', 'HISTORY');
+            return [];
+        }
+    }
+
+    save() {
+        try {
+            fs.writeFileSync(HISTORY_FILE, JSON.stringify(this.history, null, 2));
+        } catch (e) {
+            logger.error('History save error: ' + e.message, 'HISTORY');
+        }
+    }
+
+    addMessage(msg) {
+        const entry = {
+            id: msg.id,
+            timestamp: msg.timestamp || new Date().toISOString(),
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+            isGroup: msg.isGroup,
+            chatName: msg.chatName,
+            content: msg.content,
+            isReply: msg.isReply || false,
+            aiResponse: msg.aiResponse || null
+        };
+
+        this.history.push(entry);
+        while (this.history.length > this.maxSize) {
+            this.history.shift();
+        }
+        this.save();
+        return entry;
+    }
+
+    buildContext() {
+        if (this.history.length === 0) return '[NO HISTORY YET]';
+        return this.history
+            .slice(-50) // Last 50 messages
+            .map(m => `[${m.senderName}] ${m.content}${m.aiResponse ? ' → AI: ' + m.aiResponse : ''}`)
+            .join('\n');
+    }
+
+    getStats() {
+        const stats = { senders: {}, groups: {}, total: this.history.length };
+        for (const msg of this.history) {
+            if (!stats.senders[msg.senderName]) {
+                stats.senders[msg.senderName] = { count: 0, avgLength: 0, totalLength: 0 };
+            }
+            stats.senders[msg.senderName].count++;
+            stats.senders[msg.senderName].totalLength += msg.content.length;
+
+            if (!stats.groups[msg.chatName]) {
+                stats.groups[msg.chatName] = 0;
+            }
+            stats.groups[msg.chatName]++;
+        }
+        // Calculate averages
+        for (const sender in stats.senders) {
+            stats.senders[sender].avgLength = Math.round(
+                stats.senders[sender].totalLength / stats.senders[sender].count
+            );
+        }
+        return stats;
+    }
+}
+
+// ==================== GEMINI SERVICE ====================
+
+class GeminiService {
+    constructor(apiKey, model = 'gemini-2.5-flash') {
+        this.apiKey = apiKey;
+        this.model = model;
+        this.baseURL = 'https://generativelanguage.googleapis.com/v1beta/models';
+    }
+
+    async generateResponse(context, config = {}) {
+        if (!this.apiKey) {
+            throw new Error('Gemini API key not configured');
+        }
+
+        try {
+            const payload = {
+                system_instruction: {
+                    parts: [{ text: SYSTEM_INSTRUCTION }]
+                },
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: JSON.stringify({
+                            timestamp: new Date().toLocaleString('tr-TR'),
+                            context,
+                            response_format: 'json'
+                        })
+                    }]
+                }],
+                generationConfig: {
+                    temperature: config.temperature || 0.7,
+                    response_mime_type: 'application/json',
+                    top_p: 0.95,
+                    top_k: 40
+                }
+            };
+
+            const response = await axios.post(
+                `${this.baseURL}/${this.model}:generateContent?key=${this.apiKey}`,
+                payload,
+                { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
+            );
+
+            if (response.data.candidates?.[0]?.content?.parts?.[0]) {
+                const text = response.data.candidates[0].content.parts[0].text;
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    logger.warning('Gemini response not valid JSON, treating as error', 'GEMINI');
+                    return { action: 'operator', content: text, thought_process: 'Parse error' };
+                }
+            }
+
+            throw new Error('Invalid Gemini response format');
+        } catch (error) {
+            logger.error('Gemini API error: ' + error.message, 'GEMINI');
+
+            if (error.response?.status === 401) {
+                throw new Error('Invalid Gemini API key');
+            } else if (error.response?.status === 429) {
+                throw new Error('Gemini rate limit exceeded');
+            }
+
+            throw error;
+        }
+    }
+}
+
+// ==================== MESSAGE PROCESSOR ====================
+
+class MessageProcessor {
+    constructor(config, historyManager, geminiService) {
+        this.config = config;
+        this.history = historyManager;
+        this.gemini = geminiService;
+    }
+
+    shouldProcess(inputData, config) {
+        // Always process private messages
+        if (!inputData.isGroup) return true;
+
+        const groupHandling = config.messageHandling.groupHandling;
+        if (groupHandling === 'always') return true;
+        if (groupHandling === 'ignore') return false;
+
+        // mention_only: check if bot mentioned or replied-to
+        return inputData.isMentioned || inputData.isReplyToBot;
+    }
+
+    async processMessage(inputData, config) {
+        try {
+            // Skip one-word messages in groups unless mentioned
+            if (
+                inputData.isGroup &&
+                !inputData.isMentioned &&
+                inputData.content.trim().split(/\s+/).length <= 1
+            ) {
+                logger.debug('Skipping one-word group message', 'PROCESSOR');
+                return { action: 'ignore' };
+            }
+
+            const stats = this.history.getStats();
+            const context = {
+                message_history: this.history.buildContext(),
+                social_profiles: stats.senders,
+                current_message: inputData
+            };
+
+            logger.info(`Processing: "${inputData.content.substring(0, 40)}..."`, 'PROCESSOR');
+
+            const response = await this.gemini.generateResponse(context, {
+                temperature: config.gemini.temperature
+            });
+
+            return response;
+        } catch (error) {
+            logger.error('Processing error: ' + error.message, 'PROCESSOR');
+            return { action: 'operator', content: null, thought_process: 'Error: ' + error.message };
+        }
+    }
+}
+
+// ==================== WHATSAPP SERVICE ====================
+
+class WhatsAppService {
+    constructor(config, onLog) {
+        this.config = config;
+        this.onLog = onLog;
+        this.client = null;
+        this.isReady = false;
+    }
+
+    async initialize() {
+        return new Promise((resolve, reject) => {
+            try {
+                const puppeteerConfig = {
+                    handleSIGINT: false,
+                    handleSIGTERM: false,
+                    handleSIGHUP: false,
+                    headless: true,
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--single-process',
+                        '--disable-gpu',
+                        '--disable-extensions',
+                        '--user-data-dir=/tmp/puppeteer_termux'
+                    ]
+                };
+
+                this.client = new Client({
+                    authStrategy: new LocalAuth({
+                        clientId: 'termux-agent',
+                        dataPath: SESSION_DIR
+                    }),
+                    puppeteer: puppeteerConfig
+                });
+
+                // QR code
+                this.client.on('qr', (qr) => {
+                    console.log('\n📱 Scan QR code with WhatsApp:');
+                    qrcode.generate(qr, { small: true });
+                });
+
+                // Authenticated
+                this.client.on('authenticated', () => {
+                    logger.info('Authenticated successfully', 'WHATSAPP');
+                });
+
+                // Ready
+                this.client.on('ready', () => {
+                    this.isReady = true;
+                    logger.info('WhatsApp Web ready', 'WHATSAPP');
+                    resolve();
+                });
+
+                // Disconnected
+                this.client.on('disconnected', (reason) => {
+                    this.isReady = false;
+                    logger.warning('Disconnected: ' + reason, 'WHATSAPP');
+                });
+
+                // Error
+                this.client.on('error', (error) => {
+                    logger.error('WhatsApp error: ' + error.message, 'WHATSAPP');
+                });
+
+                this.client.initialize().catch(reject);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    onMessage(callback) {
+        if (this.client) {
+            this.client.on('message', callback);
+        }
+    }
+
+    async sendMessage(chatId, content) {
+        try {
+            if (!this.isReady) throw new Error('WhatsApp not ready');
+            await this.client.sendMessage(chatId, content);
+            logger.info('Message sent: ' + content.substring(0, 30), 'WHATSAPP');
+        } catch (error) {
+            logger.error('Send failed: ' + error.message, 'WHATSAPP');
+        }
+    }
+
+    async logout() {
+        try {
+            if (this.client) {
+                await this.client.logout();
+                this.isReady = false;
+                logger.info('Logged out', 'WHATSAPP');
+            }
+        } catch (e) {
+            logger.warning('Logout error: ' + e.message, 'WHATSAPP');
+        }
+    }
+}
+
+// ==================== MAIN AGENT ====================
+
+class TermuxAgent {
+    constructor() {
+        this.config = ConfigManager.load();
+        this.logger = logger;
+        this.history = new HistoryManager(this.config.storage.historyLimit);
+        this.gemini = new GeminiService(
+            this.config.gemini.apiKey,
+            this.config.gemini.model
+        );
+        this.processor = new MessageProcessor(this.config, this.history, this.gemini);
+        this.whatsapp = null;
+    }
+
+    async start() {
+        logger.info('=== WhatsApp AI Agent Starting ===', 'MAIN');
+        logger.info('Config: ' + CONFIG_FILE, 'MAIN');
+        logger.info('History: ' + HISTORY_FILE, 'MAIN');
+        logger.info('Logs: ' + LOG_FILE, 'MAIN');
+
+        if (!this.config.gemini.apiKey) {
+            logger.error('Gemini API key not configured!', 'MAIN');
+            console.log('\n⚠️ Setup required:');
+            console.log('1. Edit: ' + CONFIG_FILE);
+            console.log('2. Add your Gemini API key');
+            console.log('3. Restart agent');
+            throw new Error('Missing Gemini API key');
+        }
+
+        // Kill lingering Chrome processes from previous session
+        try {
+            await this.killLingeringChrome();
+        } catch (e) {
+            logger.warning('Chrome cleanup warning: ' + e.message, 'MAIN');
+        }
+
+        this.whatsapp = new WhatsAppService(this.config, (log) => {
+            this.logger.info(log.message, 'WHATSAPP');
+        });
+
+        // Start with retry logic
+        let retries = 3;
+        let lastError = null;
+        
+        while (retries > 0) {
+            try {
+                await this.whatsapp.initialize();
+                break; // Success
+            } catch (error) {
+                lastError = error;
+                retries--;
+                
+                if (retries > 0) {
+                    logger.warning(`WhatsApp startup failed, retrying... (${retries} left)`, 'MAIN');
+                    await this.killLingeringChrome();
+                    await new Promise(r => setTimeout(r, 3000)); // Wait 3s before retry
+                }
+            }
+        }
+        
+        if (!this.whatsapp.isReady) {
+            throw lastError || new Error('Failed to initialize WhatsApp after retries');
+        }
+
+        // Setup message handler
+        this.whatsapp.onMessage(async (msg) => {
+            if (msg.fromMe) return;
+
+            try {
+                const chat = await msg.getChat();
+                const contact = await msg.getContact();
+                let quotedMsg = null;
+                if (msg.hasQuotedMsg) {
+                    try {
+                        quotedMsg = await msg.getQuotedMessage();
+                    } catch (e) {
+                        logger.debug('Could not get quoted msg', 'MESSAGE');
+                    }
+                }
+
+                const senderName = contact.pushname || contact.name || contact.number;
+
+                const inputData = {
+                    id: msg.id._serialized,
+                    timestamp: new Date().toISOString(),
+                    senderId: contact.id._serialized,
+                    senderName: senderName,
+                    isGroup: chat.isGroup,
+                    chatName: chat.isGroup ? chat.name : 'Private',
+                    content: msg.body,
+                    isReply: !!quotedMsg,
+                    isMentioned: msg.mentionedIds?.includes(this.whatsapp.client.info.wid._serialized) || false,
+                    isReplyToBot: quotedMsg ? quotedMsg.fromMe : false
+                };
+
+                // Check if should process
+                if (!this.processor.shouldProcess(inputData, this.config)) {
+                    logger.debug('Message does not match processing rules', 'MESSAGE');
+                    return;
+                }
+
+                logger.info(`From ${senderName}: "${inputData.content.substring(0, 40)}..."`, 'MESSAGE');
+
+                // Add to history
+                this.history.addMessage({
+                    id: inputData.id,
+                    timestamp: inputData.timestamp,
+                    senderId: inputData.senderId,
+                    senderName: inputData.senderName,
+                    isGroup: inputData.isGroup,
+                    chatName: inputData.chatName,
+                    content: inputData.content,
+                    isReply: inputData.isReply
+                });
+
+                // Process with Gemini
+                const result = await this.processor.processMessage(inputData, this.config);
+
+                if (result.action === 'reply' && result.content) {
+                    logger.info(`Replying to ${senderName}`, 'MESSAGE');
+                    await this.whatsapp.sendMessage(chat.id._serialized, result.content);
+
+                    // Update history with AI response
+                    const lastEntry = this.history.history[this.history.history.length - 1];
+                    if (lastEntry) {
+                        lastEntry.aiResponse = result.content;
+                        this.history.save();
+                    }
+                } else if (result.action === 'operator') {
+                    logger.warning(`Operator escalation: ${result.thought_process}`, 'MESSAGE');
+                } else {
+                    logger.debug(`Action: ${result.action}`, 'MESSAGE');
+                }
+            } catch (error) {
+                logger.error('Message handling error: ' + error.message, 'MESSAGE');
+            }
+        });
+
+        logger.info('Agent started successfully', 'MAIN');
+        this.printStatus();
+    }
+
+    printStatus() {
+        console.log('\n✅ Agent running...');
+        console.log(`📍 Config: ${CONFIG_FILE}`);
+        console.log(`📊 History: ${HISTORY_FILE}`);
+        console.log(`📝 Logs: ${LOG_FILE}`);
+        console.log(`\n⚙️ Active Config:`);
+        console.log(`   - Group handling: ${this.config.messageHandling.groupHandling}`);
+        console.log(`   - Gemini model: ${this.config.gemini.model}`);
+        console.log(`   - History limit: ${this.config.storage.historyLimit}`);
+        console.log(`\n💡 Tips:`);
+        console.log(`   - Edit config: nano ${CONFIG_FILE}`);
+        console.log(`   - View logs: tail -f ${LOG_FILE}`);
+        console.log(`   - View history: cat ${HISTORY_FILE}`);
+        console.log(`\nPress Ctrl+C to stop...\n`);
+    }
+
+    async killLingeringChrome() {
+        const { execSync } = require('child_process');
+        
+        try {
+            // Kill Chrome/Chromium processes
+            try {
+                execSync('pkill -f "chromium|google-chrome" || true', { stdio: 'ignore' });
+                logger.debug('Killed lingering Chrome processes', 'CLEANUP');
+            } catch (e) {
+                // Ignore
+            }
+
+            // Clean up session lock files
+            if (fs.existsSync(SESSION_DIR)) {
+                const lockFile = path.join(SESSION_DIR, '.lock');
+                if (fs.existsSync(lockFile)) {
+                    try {
+                        fs.unlinkSync(lockFile);
+                        logger.debug('Removed session lock file', 'CLEANUP');
+                    } catch (e) {
+                        logger.warning('Could not remove lock file: ' + e.message, 'CLEANUP');
+                    }
+                }
+                
+                // Remove leveldb locks
+                try {
+                    const locks = fs.readdirSync(SESSION_DIR).filter(f => f.includes('LOCK'));
+                    locks.forEach(f => {
+                        try {
+                            fs.unlinkSync(path.join(SESSION_DIR, f));
+                        } catch (e) {
+                            // Ignore
+                        }
+                    });
+                } catch (e) {
+                    // Ignore
+                }
+            }
+
+            await new Promise(r => setTimeout(r, 1000));
+        } catch (error) {
+            logger.warning('Chrome cleanup error: ' + error.message, 'CLEANUP');
+        }
+    }
+
+    async stop() {
+        logger.info('Shutting down...', 'MAIN');
+        if (this.whatsapp) {
+            await this.whatsapp.logout();
+        }
+        logger.info('Agent stopped', 'MAIN');
+        process.exit(0);
+    }
+}
+
+// ==================== INITIALIZATION ====================
+
+const logger = new Logger(LOG_FILE, 'info');
+
+const agent = new TermuxAgent();
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n\n👋 Shutting down...');
+    agent.stop();
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n\n👋 Shutting down...');
+    agent.stop();
+});
+
+// Auto-restart on error
+process.on('uncaughtException', (error) => {
+    logger.error('Uncaught exception: ' + error.message, 'MAIN');
+    console.error(error);
+    setTimeout(() => {
+        logger.info('Restarting...', 'MAIN');
+        process.exit(1); // Let pm2/cron restart it
+    }, 5000);
+});
+
+// Start
+agent.start().catch((error) => {
+    logger.error('Startup failed: ' + error.message, 'MAIN');
+    console.error('❌ Failed to start agent');
+    console.error(error.message);
+    process.exit(1);
+});
