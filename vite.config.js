@@ -5,10 +5,11 @@ import path from 'path';
 export default defineConfig({
     plugins: [react()],
     root: './',
+    publicDir: 'public',
     server: {
         port: 5173,
         strictPort: false,
-        host: 'localhost',
+        host: '127.0.0.1',
         fs: {
             strict: false
         }
@@ -17,7 +18,12 @@ export default defineConfig({
         outDir: 'dist',
         emptyOutDir: true,
         target: 'esnext',
-        minify: false
+        minify: false,
+        rollupOptions: {
+            input: {
+                main: path.resolve(__dirname, 'index.html')
+            }
+        }
     },
     resolve: {
         alias: {
