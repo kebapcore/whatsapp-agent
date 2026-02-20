@@ -4,22 +4,16 @@ import path from 'path';
 
 export default defineConfig({
     plugins: [react()],
-    root: path.resolve(__dirname, '.'),
-    publicDir: 'public',
     server: {
         port: 5173,
         strictPort: false,
-        host: 'localhost',
-        middleware: false
+        host: 'localhost'
     },
     build: {
-        outDir: path.resolve(__dirname, 'dist'),
+        outDir: 'dist',
         emptyOutDir: true,
         target: 'esnext',
-        minify: 'terser',
-        rollupOptions: {
-            input: path.resolve(__dirname, 'index.html')
-        }
+        minify: 'terser'
     },
     resolve: {
         alias: {

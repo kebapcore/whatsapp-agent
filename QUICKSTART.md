@@ -1,4 +1,4 @@
-fix# Quick Start Guide - WhatsApp Agent
+# Quick Start Guide - WhatsApp Agent
 
 Get up and running in 10 minutes.
 
